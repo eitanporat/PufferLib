@@ -7,23 +7,31 @@
 #include <string.h>
 #include "raylib.h"
 
+// Debug mode: set to 1 to enable debug output, 0 to disable
+#define DEBUG 0
+
+#if DEBUG
+#define debug_printf(...) printf(__VA_ARGS__)
+#else
+#define debug_printf(...) ((void)0)
+#endif
+
 #define MAX_SIZE 8
-#define MIN_SIZE 4
 #define MAX_CLUES (MAX_SIZE / 2)
 
-const unsigned char EMPTY = 0;
-const unsigned char FILLED = 1;
-const unsigned char PADDING = 2;
+const unsigned char CELL_EMPTY = 0;
+const unsigned char CELL_WHITE = 1;
+const unsigned char CELL_BLACK = 2;
+const unsigned char CELL_PADDING = 3;
 
 const float REWARD_WIN = 1.0;
-const float REWARD_INVALID_MOVE = -0.01;
-const float REWARD_OUT_OF_BOUNDS = -0.01;
-const float REWARD_TIMEOUT = -1.0;
-const float REWARD_COMPLETE_LINE = 0.01;
+const float REWARD_INVALID_MOVE = 0;
+const float REWARD_OUT_OF_BOUNDS = 0;
+const float REWARD_TIMEOUT = 0;
+const float REWARD_COMPLETE_LINE = 0.02;
 
 // Required struct for logging
 typedef struct {
-    float perf;
     float score;
     float episode_return;
     float episode_length;
@@ -74,7 +82,6 @@ typedef struct {
 
 // Helper function implementations
 void add_log(Nonogram* env) {
-    env->log.perf += (env->rewards[0] > 0) ? 1 : 0;
     env->log.score += env->rewards[0];
     env->log.episode_length += env->steps_taken;
     env->log.episode_return += env->episode_reward;
@@ -85,23 +92,37 @@ int get_row_run_length(Nonogram* env, int row, int col) {
     int row_start = row * MAX_SIZE;
     int run_length = 1;
 
+    debug_printf("  get_row_run_length: row=%d, col=%d, row_start=%d\n", row, col, row_start);
+    debug_printf("  Row cells before marking: ");
+    for (int c = 0; c < env->size; c++) {
+        debug_printf("%d ", env->observations[row_start + c]);
+    }
+    debug_printf("\n");
+
     // Count left
+    int left_count = 0;
     for (int c = col - 1; c >= 0; c--) {
-        if (env->observations[row_start + c] == FILLED) {
+        if (env->observations[row_start + c] == CELL_BLACK) {
             run_length++;
+            left_count++;
         } else {
             break;
         }
     }
+    debug_printf("  Left count: %d\n", left_count);
 
     // Count right
+    int right_count = 0;
     for (int c = col + 1; c < env->size; c++) {
-        if (env->observations[row_start + c] == FILLED) {
+        if (env->observations[row_start + c] == CELL_BLACK) {
             run_length++;
+            right_count++;
         } else {
             break;
         }
     }
+    debug_printf("  Right count: %d\n", right_count);
+    debug_printf("  Total run_length (1 + left + right): %d\n", run_length);
 
     return run_length;
 }
@@ -109,51 +130,89 @@ int get_row_run_length(Nonogram* env, int row, int col) {
 int get_col_run_length(Nonogram* env, int row, int col) {
     int run_length = 1;
 
+    debug_printf("  get_col_run_length: row=%d, col=%d\n", row, col);
+    debug_printf("  Col cells before marking: ");
+    for (int r = 0; r < env->size; r++) {
+        debug_printf("%d ", env->observations[r * MAX_SIZE + col]);
+    }
+    debug_printf("\n");
+
     // Count up
+    int up_count = 0;
     for (int r = row - 1; r >= 0; r--) {
-        if (env->observations[r * MAX_SIZE + col] == FILLED) {
+        if (env->observations[r * MAX_SIZE + col] == CELL_BLACK) {
             run_length++;
+            up_count++;
         } else {
             break;
         }
     }
+    debug_printf("  Up count: %d\n", up_count);
 
     // Count down
+    int down_count = 0;
     for (int r = row + 1; r < env->size; r++) {
-        if (env->observations[r * MAX_SIZE + col] == FILLED) {
+        if (env->observations[r * MAX_SIZE + col] == CELL_BLACK) {
             run_length++;
+            down_count++;
         } else {
             break;
         }
     }
+    debug_printf("  Down count: %d\n", down_count);
+    debug_printf("  Total run_length (1 + up + down): %d\n", run_length);
 
     return run_length;
 }
 
 int check_line_matches(unsigned char* line_data, unsigned char* clues, int num_runs, int size) {
+    debug_printf("  check_line_matches: num_runs=%d, size=%d\n", num_runs, size);
+    debug_printf("  Line data: ");
+    for (int i = 0; i < size; i++) {
+        debug_printf("%d ", line_data[i]);
+    }
+    debug_printf("\n");
+    debug_printf("  Expected clues: ");
+    for (int i = 0; i < num_runs; i++) {
+        debug_printf("%d ", clues[i]);
+    }
+    debug_printf("\n");
+
     int run_idx = 0;
     int count = 0;
 
     for (int i = 0; i < size; i++) {
-        count += line_data[i];
-        if (line_data[i] == 0 && count > 0) {
-            if (clues[run_idx] != count) {
-                return 0;
+        if (line_data[i] == CELL_BLACK) {
+            count++;
+            debug_printf("  Position %d: BLACK, count=%d\n", i, count);
+        } else if (line_data[i] == CELL_EMPTY || line_data[i] == CELL_WHITE) {
+            if (count > 0) {
+                debug_printf("  End of run at position %d: count=%d, expected=%d (run_idx=%d)\n",
+                       i, count, clues[run_idx], run_idx);
+                if (clues[run_idx] != count) {
+                    debug_printf("  MISMATCH! Expected %d but got %d\n", clues[run_idx], count);
+                    return 0;
+                }
+                run_idx++;
+                count = 0;
             }
-            run_idx++;
-            count = 0;
         }
     }
 
     // Check final run
     if (count > 0) {
+        debug_printf("  Final run: count=%d, expected=%d (run_idx=%d)\n", count, clues[run_idx], run_idx);
         if (clues[run_idx] != count) {
+            debug_printf("  FINAL MISMATCH! Expected %d but got %d\n", clues[run_idx], count);
             return 0;
         }
         run_idx++;
     }
 
-    return run_idx == num_runs;
+    debug_printf("  Total runs found: %d, expected: %d\n", run_idx, num_runs);
+    int matches = (run_idx == num_runs);
+    debug_printf("  Pattern matches: %d\n", matches);
+    return matches;
 }
 
 // Helper to generate random float in [0, 1]
@@ -170,10 +229,10 @@ void c_reset(Nonogram* env) {
     int max_clues = MAX_SIZE / 2;
 
     // Initialize all grid as PADDING, then clear valid cells to EMPTY (using MAX_SIZE stride)
-    memset(env->observations, PADDING, full_grid_size);
+    memset(env->observations, CELL_PADDING, full_grid_size);
     for (int r = 0; r < env->size; r++) {
         for (int c = 0; c < env->size; c++) {
-            env->observations[r * MAX_SIZE + c] = EMPTY;
+            env->observations[r * MAX_SIZE + c] = CELL_EMPTY;
         }
     }
     // Clear clue areas
@@ -182,12 +241,12 @@ void c_reset(Nonogram* env) {
     // Generate random solution using MAX_SIZE stride with uniform fill probability
     // Sample fill probability p uniformly from [0, 1] for difficulty variation
     float fill_prob = rand_uniform();
-    memset(env->solution, EMPTY, MAX_SIZE * MAX_SIZE);
+    memset(env->solution, CELL_EMPTY, MAX_SIZE * MAX_SIZE);
     int has_filled = 0;
     for (int i = 0; i < env->size; i++) {
         for (int j = 0; j < env->size; j++) {
             if (rand_uniform() < fill_prob) {
-                env->solution[i * MAX_SIZE + j] = FILLED;
+                env->solution[i * MAX_SIZE + j] = CELL_BLACK;
                 has_filled = 1;
             }
         }
@@ -197,7 +256,7 @@ void c_reset(Nonogram* env) {
     if (!has_filled) {
         int rand_row = rand() % env->size;
         int rand_col = rand() % env->size;
-        env->solution[rand_row * MAX_SIZE + rand_col] = FILLED;
+        env->solution[rand_row * MAX_SIZE + rand_col] = CELL_BLACK;
     }
 
     // Reset clues arrays
@@ -209,7 +268,7 @@ void c_reset(Nonogram* env) {
         int clue_idx = 0;
         int count = 0;
         for (int j = 0; j < env->size; j++) {
-            if (env->solution[i * MAX_SIZE + j] == FILLED) {
+            if (env->solution[i * MAX_SIZE + j] == CELL_BLACK) {
                 count++;
             } else if (count > 0) {
                 env->rows_clues[i * MAX_CLUES + clue_idx] = count;
@@ -229,7 +288,7 @@ void c_reset(Nonogram* env) {
         int clue_idx = 0;
         int count = 0;
         for (int i = 0; i < env->size; i++) {
-            if (env->solution[i * MAX_SIZE + j] == FILLED) {
+            if (env->solution[i * MAX_SIZE + j] == CELL_BLACK) {
                 count++;
             } else if (count > 0) {
                 env->cols_clues[j * MAX_CLUES + clue_idx] = count;
@@ -248,11 +307,8 @@ void c_reset(Nonogram* env) {
     memcpy(env->observations + full_grid_size, env->rows_clues, MAX_SIZE * max_clues);
     memcpy(env->observations + full_grid_size + MAX_SIZE * max_clues, env->cols_clues, MAX_SIZE * max_clues);
 
-    // Add one-hot encoding of board size at the end
-    int size_encoding_offset = full_grid_size + 2 * MAX_SIZE * max_clues;
-    int size_encoding_len = MAX_SIZE - MIN_SIZE + 1;
-    memset(env->observations + size_encoding_offset, 0, size_encoding_len);
-    env->observations[size_encoding_offset + (env->size - MIN_SIZE)] = 1;
+    // Store board size as scalar at end of observation
+    env->observations[full_grid_size + 2 * MAX_SIZE * max_clues] = env->size;
 
     // Calculate max clues and target sums
     memset(env->rows_totals, 0, MAX_SIZE);
@@ -295,20 +351,63 @@ void c_reset(Nonogram* env) {
         env->target_total += env->rows_target_sum[i];
     }
 
+    // Debug: print solution and clues
+    debug_printf("\n=== RESET: New puzzle generated (size=%d) ===\n", env->size);
+    debug_printf("Solution grid:\n");
+    for (int r = 0; r < env->size; r++) {
+        debug_printf("  Row %d: ", r);
+        for (int c = 0; c < env->size; c++) {
+            debug_printf("%d ", env->solution[r * MAX_SIZE + c]);
+        }
+        debug_printf("\n");
+    }
+
+    debug_printf("\nRow clues:\n");
+    for (int r = 0; r < env->size; r++) {
+        debug_printf("  Row %d (num_runs=%d, target_sum=%d, max_clue=%d): ",
+               r, env->rows_num_runs[r], env->rows_target_sum[r], env->rows_max_clue[r]);
+        for (int i = 0; i < MAX_CLUES; i++) {
+            int clue = env->rows_clues[r * MAX_CLUES + i];
+            if (clue > 0) {
+                debug_printf("%d ", clue);
+            }
+        }
+        debug_printf("\n");
+    }
+
+    debug_printf("\nColumn clues:\n");
+    for (int c = 0; c < env->size; c++) {
+        debug_printf("  Col %d (num_runs=%d, target_sum=%d, max_clue=%d): ",
+               c, env->cols_num_runs[c], env->cols_target_sum[c], env->cols_max_clue[c]);
+        for (int i = 0; i < MAX_CLUES; i++) {
+            int clue = env->cols_clues[c * MAX_CLUES + i];
+            if (clue > 0) {
+                debug_printf("%d ", clue);
+            }
+        }
+        debug_printf("\n");
+    }
+
+    debug_printf("\nTarget total BLACK cells: %d\n", env->target_total);
+    debug_printf("===================================\n\n");
+
     env->steps_taken = 0;
     env->episode_reward = 0;
 }
 
 void c_step(Nonogram* env) {
-    int pos = env->actions[0];
+    int action = env->actions[0];
 
     env->terminals[0] = 0;
     env->rewards[0] = 0;
 
     env->steps_taken++;
 
+    debug_printf("DEBUG c_step: action=%d, steps=%d\n", action, env->steps_taken);
+
     // Check timeout FIRST before any game logic
     if (env->steps_taken >= env->max_steps) {
+        debug_printf("DEBUG: TIMEOUT\n");
         env->terminals[0] = 1;
         env->rewards[0] = REWARD_TIMEOUT;
         env->episode_reward += REWARD_TIMEOUT;
@@ -317,39 +416,92 @@ void c_step(Nonogram* env) {
         return;
     }
 
-    // Convert action to row/col using MAX_SIZE stride
+    // Decode action: 0-63 = mark WHITE, 64-127 = mark BLACK
+    int mark_black = action >= (MAX_SIZE * MAX_SIZE);
+    int pos = action % (MAX_SIZE * MAX_SIZE);
+
+    debug_printf("DEBUG: mark_black=%d, pos=%d\n", mark_black, pos);
+
+    // Convert position to row/col using MAX_SIZE stride
     int row = pos / MAX_SIZE;
     int col = pos % MAX_SIZE;
 
+    debug_printf("DEBUG: row=%d, col=%d, size=%d\n", row, col, env->size);
+
     // Check if action is out of bounds (hitting padding area)
     if (row >= env->size || col >= env->size) {
+        debug_printf("DEBUG: OUT OF BOUNDS (row=%d, col=%d >= size=%d)\n", row, col, env->size);
+        env->terminals[0] = 1;
         env->rewards[0] = REWARD_OUT_OF_BOUNDS;
         env->episode_reward += REWARD_OUT_OF_BOUNDS;
+        add_log(env);
+        c_reset(env);
         return;
     }
 
     unsigned char current = env->observations[pos];
 
-    // If toggling on (EMPTY -> FILLED)
-    if (current == EMPTY) {
-        // First check: totals equal target - invalid move
+    debug_printf("DEBUG: current cell value=%d (EMPTY=%d, WHITE=%d, BLACK=%d, PADDING=%d)\n",
+           current, CELL_EMPTY, CELL_WHITE, CELL_BLACK, CELL_PADDING);
+
+    // Can't mark a cell that's already been marked
+    if (current != CELL_EMPTY) {
+        debug_printf("DEBUG: INVALID - cell already marked (current=%d)\n", current);
+        env->terminals[0] = 1;
+        env->rewards[0] = REWARD_INVALID_MOVE;
+        env->episode_reward += REWARD_INVALID_MOVE;
+        add_log(env);
+        c_reset(env);
+        return;
+    }
+
+    // Mark cell as BLACK or WHITE
+    if (mark_black) {
+        debug_printf("DEBUG: Marking BLACK\n");
+        // Marking BLACK - check if valid
+        // First check: totals equal target - invalid move (terminate episode)
+        debug_printf("DEBUG: rows_totals[%d]=%d, rows_target_sum[%d]=%d\n",
+               row, env->rows_totals[row], row, env->rows_target_sum[row]);
+        debug_printf("DEBUG: cols_totals[%d]=%d, cols_target_sum[%d]=%d\n",
+               col, env->cols_totals[col], col, env->cols_target_sum[col]);
+
         if (env->rows_totals[row] == env->rows_target_sum[row] ||
             env->cols_totals[col] == env->cols_target_sum[col]) {
+            debug_printf("DEBUG: INVALID - row or col already full\n");
+            env->terminals[0] = 1;
             env->rewards[0] = REWARD_INVALID_MOVE;
             env->episode_reward += REWARD_INVALID_MOVE;
+            add_log(env);
+            c_reset(env);
             return;
         }
 
-        // Check if filling this cell would create a run longer than max allowed
-        if (get_row_run_length(env, row, col) > env->rows_max_clue[row]) {
+        // Check if marking this cell BLACK would create a run longer than max allowed
+        int row_run = get_row_run_length(env, row, col);
+        debug_printf("DEBUG: row_run_length=%d, rows_max_clue[%d]=%d\n",
+               row_run, row, env->rows_max_clue[row]);
+
+        if (row_run > env->rows_max_clue[row]) {
+            debug_printf("DEBUG: INVALID - row run too long\n");
+            env->terminals[0] = 1;
             env->rewards[0] = REWARD_INVALID_MOVE;
             env->episode_reward += REWARD_INVALID_MOVE;
+            add_log(env);
+            c_reset(env);
             return;
         }
 
-        if (get_col_run_length(env, row, col) > env->cols_max_clue[col]) {
+        int col_run = get_col_run_length(env, row, col);
+        debug_printf("DEBUG: col_run_length=%d, cols_max_clue[%d]=%d\n",
+               col_run, col, env->cols_max_clue[col]);
+
+        if (col_run > env->cols_max_clue[col]) {
+            debug_printf("DEBUG: INVALID - col run too long\n");
+            env->terminals[0] = 1;
             env->rewards[0] = REWARD_INVALID_MOVE;
             env->episode_reward += REWARD_INVALID_MOVE;
+            add_log(env);
+            c_reset(env);
             return;
         }
 
@@ -357,45 +509,61 @@ void c_step(Nonogram* env) {
         int row_completed = 0;
         int col_completed = 0;
 
+        debug_printf("DEBUG: Checking line completion...\n");
+
         if (env->rows_totals[row] == env->rows_target_sum[row] - 1) {
-            // Temporarily fill to check
-            env->observations[pos] = FILLED;
+            debug_printf("DEBUG: Would complete row %d, checking pattern...\n", row);
+            // Temporarily mark BLACK to check
+            env->observations[pos] = CELL_BLACK;
             int row_start = row * MAX_SIZE;
-            if (!check_line_matches(env->observations + row_start,
+            int matches = check_line_matches(env->observations + row_start,
                                    env->rows_clues + row * MAX_CLUES,
-                                   env->rows_num_runs[row], env->size)) {
-                // Runs don't match - invalid move
-                env->observations[pos] = EMPTY;
+                                   env->rows_num_runs[row], env->size);
+            debug_printf("DEBUG: Row pattern matches: %d\n", matches);
+            if (!matches) {
+                // Runs don't match - invalid move (terminate episode)
+                debug_printf("DEBUG: INVALID - row pattern doesn't match\n");
+                env->observations[pos] = CELL_EMPTY;
+                env->terminals[0] = 1;
                 env->rewards[0] = REWARD_INVALID_MOVE;
                 env->episode_reward += REWARD_INVALID_MOVE;
+                add_log(env);
+                c_reset(env);
                 return;
             }
-            env->observations[pos] = EMPTY;
+            env->observations[pos] = CELL_EMPTY;
             row_completed = 1;
         }
 
         if (env->cols_totals[col] == env->cols_target_sum[col] - 1) {
-            // Temporarily fill to check
-            env->observations[pos] = FILLED;
+            debug_printf("DEBUG: Would complete col %d, checking pattern...\n", col);
+            // Temporarily mark BLACK to check
+            env->observations[pos] = CELL_BLACK;
             unsigned char col_data[MAX_SIZE];
             for (int i = 0; i < env->size; i++) {
                 col_data[i] = env->observations[i * MAX_SIZE + col];
             }
-            if (!check_line_matches(col_data,
+            int matches = check_line_matches(col_data,
                                    env->cols_clues + col * MAX_CLUES,
-                                   env->cols_num_runs[col], env->size)) {
-                // Runs don't match - invalid move
-                env->observations[pos] = EMPTY;
+                                   env->cols_num_runs[col], env->size);
+            debug_printf("DEBUG: Col pattern matches: %d\n", matches);
+            if (!matches) {
+                // Runs don't match - invalid move (terminate episode)
+                debug_printf("DEBUG: INVALID - col pattern doesn't match\n");
+                env->observations[pos] = CELL_EMPTY;
+                env->terminals[0] = 1;
                 env->rewards[0] = REWARD_INVALID_MOVE;
                 env->episode_reward += REWARD_INVALID_MOVE;
+                add_log(env);
+                c_reset(env);
                 return;
             }
-            env->observations[pos] = EMPTY;
+            env->observations[pos] = CELL_EMPTY;
             col_completed = 1;
         }
 
-        // Apply toggle
-        env->observations[pos] = FILLED;
+        // Apply mark BLACK
+        env->observations[pos] = CELL_BLACK;
         env->rows_totals[row]++;
         env->cols_totals[col]++;
         env->filled_total++;
@@ -411,14 +579,11 @@ void c_step(Nonogram* env) {
         env->rewards[0] += line_reward;
         env->episode_reward += line_reward;
     } else {
-        // Toggling off (FILLED -> EMPTY) - always allowed
-        env->observations[pos] = EMPTY;
-        env->rows_totals[row]--;
-        env->cols_totals[col]--;
-        env->filled_total--;
+        // Marking WHITE - always valid (just marks empty as not-black)
+        env->observations[pos] = CELL_WHITE;
     }
 
-    // Check if solved
+    // Check if solved (filled_total == target_total means all BLACK cells placed correctly)
     if (env->filled_total == env->target_total) {
         env->terminals[0] = 1;
         env->rewards[0] = REWARD_WIN;
@@ -497,10 +662,12 @@ void c_render(Nonogram* env) {
             int y = offset_y + clue_area + r * cell_size;
             int pos = r * MAX_SIZE + c;
 
-            if (env->observations[pos] == FILLED) {
-                DrawRectangle(x, y, cell_size, cell_size, WHITE);
+            if (env->observations[pos] == CELL_BLACK) {
+                DrawRectangle(x, y, cell_size, cell_size, (Color){50, 50, 50, 255});  // Dark gray for BLACK
+            } else if (env->observations[pos] == CELL_WHITE) {
+                DrawRectangle(x, y, cell_size, cell_size, (Color){240, 240, 240, 255});  // Light gray for WHITE
             } else {
-                DrawRectangle(x, y, cell_size, cell_size, DARKGRAY);
+                DrawRectangle(x, y, cell_size, cell_size, (Color){120, 120, 120, 255});  // Medium gray for EMPTY
             }
             DrawRectangleLines(x, y, cell_size, cell_size, LIGHTGRAY);
         }
@@ -546,10 +713,10 @@ void c_render(Nonogram* env) {
             int y = offset_y + clue_area + r * cell_size;
             int pos = r * MAX_SIZE + c;
 
-            if (env->solution[pos] == FILLED) {
+            if (env->solution[pos] == CELL_BLACK) {
                 DrawRectangle(x, y, cell_size, cell_size, GREEN);
             } else {
-                DrawRectangle(x, y, cell_size, cell_size, DARKGRAY);
+                DrawRectangle(x, y, cell_size, cell_size, (Color){200, 200, 200, 255});
             }
             DrawRectangleLines(x, y, cell_size, cell_size, LIGHTGRAY);
         }

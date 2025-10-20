@@ -9,17 +9,17 @@ from pufferlib.ocean.nonogram import binding
 MAX_SIZE = 8
 MIN_SIZE = 4
 MAX_CLUES = MAX_SIZE // 2
-SIZE_ENCODING_LEN = MAX_SIZE - MIN_SIZE + 1
-OBS_SIZE = MAX_SIZE * MAX_SIZE + 2 * MAX_SIZE * MAX_CLUES + SIZE_ENCODING_LEN
+OBS_SIZE = MAX_SIZE * MAX_SIZE + 2 * MAX_SIZE * MAX_CLUES + 1  # +1 for board size
 
 class Nonogram(pufferlib.PufferEnv):
     def __init__(self, num_envs=1, render_mode=None, log_interval=128,
                  min_size=4, max_size=8, buf=None, seed=0):
-        # Observation space: grid cells (0-2), clues (0-max_size), size encoding (0-1)
+        # Observation space: grid cells (0-3: EMPTY/WHITE/BLACK/PADDING), clues (0-max_size), size encoding (0-1)
         # Using max_size as high covers all values
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=max_size,
             shape=(OBS_SIZE,), dtype=np.uint8)
-        self.single_action_space = gymnasium.spaces.Discrete(MAX_SIZE * MAX_SIZE)
+        # Action space: 0-63 = mark WHITE, 64-127 = mark BLACK
+        self.single_action_space = gymnasium.spaces.Discrete(MAX_SIZE * MAX_SIZE * 2)
         self.render_mode = render_mode
         self.num_agents = num_envs
         self.log_interval = log_interval
