@@ -942,6 +942,107 @@ class Tetris(nn.Module):
         value = self.value_fn(hidden)  # (B, 1)
         return action, value
 
+class NonogramLSTM(pufferlib.models.LSTMWrapper):
+    def __init__(self, env, policy, input_size=256, hidden_size=256):
+        super().__init__(env, policy, input_size, hidden_size)
+
+
+class Nonogram(nn.Module):
+    def __init__(self, env, cnn_channels=32, hidden_size=128, **kwargs):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.is_continuous = False
+
+        # Grid row encoder: convolve along each row with (1, 8) kernel
+        self.grid_row_encoder = nn.Sequential(
+            pufferlib.pytorch.layer_init(
+                nn.Conv2d(in_channels=4, out_channels=cnn_channels, kernel_size=(1, 8), stride=(1, 1), padding=0)
+            ),
+            nn.ReLU(),
+            nn.Flatten(),
+            pufferlib.pytorch.layer_init(nn.Linear(cnn_channels * 8, hidden_size)),
+            nn.ReLU(),
+        )
+
+        # Grid column encoder: convolve along each column with (8, 1) kernel
+        self.grid_col_encoder = nn.Sequential(
+            pufferlib.pytorch.layer_init(
+                nn.Conv2d(in_channels=4, out_channels=cnn_channels, kernel_size=(8, 1), stride=(1, 1), padding=0)
+            ),
+            nn.ReLU(),
+            nn.Flatten(),
+            pufferlib.pytorch.layer_init(nn.Linear(cnn_channels * 8, hidden_size)),
+            nn.ReLU(),
+        )
+
+        # Row clues encoder
+        self.row_clues_encoder = nn.Sequential(
+            pufferlib.pytorch.layer_init(
+                nn.Conv2d(in_channels=8+1, out_channels=cnn_channels, kernel_size=(1, 4), stride=(1, 4), padding=0)
+            ),
+            nn.ReLU(),
+            nn.Flatten(),
+            pufferlib.pytorch.layer_init(nn.Linear(cnn_channels*8, hidden_size)),
+            nn.ReLU(),
+        )
+
+        # Column clues encoder
+        self.col_clues_encoder = nn.Sequential(
+            pufferlib.pytorch.layer_init(
+                nn.Conv2d(in_channels=8+1, out_channels=cnn_channels, kernel_size=(4, 1), stride=(4, 1), padding=0)
+            ),
+            nn.ReLU(),
+            nn.Flatten(),
+            pufferlib.pytorch.layer_init(nn.Linear(cnn_channels*8, hidden_size)),
+            nn.ReLU(),
+        )
+
+        self.size_encoder = nn.Embedding(9, hidden_size)
+
+        # Combine: grid_row + grid_col + row_clues + col_clues + size = 5 * hidden_size
+        self.proj = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size * 5, hidden_size)),
+            nn.ReLU(),
+        )
+
+        self.actor = pufferlib.pytorch.layer_init(
+            nn.Linear(hidden_size, env.single_action_space.n), std=0.01)
+        self.value_fn = pufferlib.pytorch.layer_init(
+            nn.Linear(hidden_size, 1), std=1)
+
+    def forward(self, observations, state=None):
+        hidden = self.encode_observations(observations)
+        actions, value = self.decode_actions(hidden)
+        return actions, value
+
+    def forward_train(self, x, state=None):
+        return self.forward(x, state)
+
+    def encode_observations(self, observations, state=None):
+        B = observations.shape[0]
+        grid = F.one_hot(observations[:, :64].view(B, 8, 8).long(), 4).permute(0, 3, 1, 2).float()
+        row_clues = F.one_hot(observations[:, 64:96].view(B, 8, 4).long(), 9).permute(0, 3, 1, 2).float()
+        col_clues = F.one_hot(
+            observations[:, 96:128].view(B, 8, 4).long(), 9
+        ).permute(0, 3, 2, 1).float()  # (B, 9, runs=4, cols=8)
+        board_size = observations[:, 128].long()  # (B,)
+
+        features = torch.cat([
+            self.grid_row_encoder(grid),
+            self.grid_col_encoder(grid),
+            self.row_clues_encoder(row_clues),
+            self.col_clues_encoder(col_clues),
+            self.size_encoder(board_size),
+        ], dim=1)
+
+        return self.proj(features)
+
+    def decode_actions(self, flat_hidden):
+        action = self.actor(flat_hidden)
+        value = self.value_fn(flat_hidden)
+        return action, value
+
+        
 class Drone(nn.Module):
     ''' Drone policy. Flattens obs and applies a linear layer.
     '''
@@ -953,9 +1054,9 @@ class Drone(nn.Module):
         self.is_continuous = isinstance(env.single_action_space,
                 pufferlib.spaces.Box)
         try:
-            self.is_dict_obs = isinstance(env.env.observation_space, pufferlib.spaces.Dict) 
+            self.is_dict_obs = isinstance(env.env.observation_space, pufferlib.spaces.Dict)
         except:
-            self.is_dict_obs = isinstance(env.observation_space, pufferlib.spaces.Dict) 
+            self.is_dict_obs = isinstance(env.observation_space, pufferlib.spaces.Dict)
 
         if self.is_dict_obs:
             self.dtype = pufferlib.pytorch.nativize_dtype(env.emulated)
@@ -998,7 +1099,7 @@ class Drone(nn.Module):
         if self.is_dict_obs:
             observations = pufferlib.pytorch.nativize_tensor(observations, self.dtype)
             observations = torch.cat([v.view(batch_size, -1) for v in observations.values()], dim=1)
-        else: 
+        else:
             observations = observations.view(batch_size, -1)
         return self.encoder(observations.float())
 
