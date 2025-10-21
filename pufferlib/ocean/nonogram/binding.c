@@ -15,16 +15,17 @@ static PyObject* vec_get_size(PyObject* self, PyObject* args);
 static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     env->min_size = unpack(kwargs, "min_size");
     env->max_size = unpack(kwargs, "max_size");
+    env->easy_learn = unpack(kwargs, "easy_learn");
     env->size = env->max_size;
     env->max_steps = 4 * env->max_size * env->max_size;
     return 0;
 }
 
 static int my_log(PyObject* dict, Log* log) {
-    assign_to_dict(dict, "perf", log->perf);
     assign_to_dict(dict, "score", log->score);
     assign_to_dict(dict, "episode_return", log->episode_return);
     assign_to_dict(dict, "episode_length", log->episode_length);
+    assign_to_dict(dict, "solved", log->solved);
     return 0;
 }
 

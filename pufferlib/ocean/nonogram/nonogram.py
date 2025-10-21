@@ -13,7 +13,7 @@ OBS_SIZE = MAX_SIZE * MAX_SIZE + 2 * MAX_SIZE * MAX_CLUES + 1  # +1 for board si
 
 class Nonogram(pufferlib.PufferEnv):
     def __init__(self, num_envs=1, render_mode=None, log_interval=128,
-                 min_size=4, max_size=8, buf=None, seed=0):
+                 min_size=4, max_size=8, easy_learn=0, buf=None, seed=0):
         # Observation space: grid cells (0-3: EMPTY/WHITE/BLACK/PADDING), clues (0-max_size), size encoding (0-1)
         # Using max_size as high covers all values
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=max_size,
@@ -27,7 +27,7 @@ class Nonogram(pufferlib.PufferEnv):
         super().__init__(buf)
         self.c_envs = binding.vec_init(self.observations, self.actions, self.rewards,
             self.terminals, self.truncations, num_envs, seed,
-            min_size=min_size, max_size=max_size)
+            min_size=min_size, max_size=max_size, easy_learn=easy_learn)
 
         self.solutions = np.zeros((num_envs, max_size * max_size), dtype=np.uint8)
 

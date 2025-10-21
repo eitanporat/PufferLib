@@ -25,16 +25,20 @@ const unsigned char CELL_BLACK = 2;
 const unsigned char CELL_PADDING = 3;
 
 const float REWARD_WIN = 1.0;
-const float REWARD_INVALID_MOVE = 0;
-const float REWARD_OUT_OF_BOUNDS = 0;
-const float REWARD_TIMEOUT = 0;
+const float REWARD_INVALID_MOVE = -0.2;
+const float REWARD_OUT_OF_BOUNDS = -0.2;
+const float REWARD_TIMEOUT = -0.1;
 const float REWARD_COMPLETE_LINE = 0.02;
+const float REWARD_EASY_LEARN_CORRECT = 0.01;
+const float REWARD_EASY_LEARN_INCORRECT = -0.01;
+const float REWARD_NO_MATCH = -0.05;
 
 // Required struct for logging
 typedef struct {
     float score;
     float episode_return;
     float episode_length;
+    float solved;
     float n;
 } Log;
 
@@ -54,6 +58,7 @@ typedef struct {
     int steps_taken;
     int filled_total;
     int target_total;
+    int easy_learn;
 
     // Solution (for generating clues)
     unsigned char solution[MAX_SIZE * MAX_SIZE];
@@ -85,6 +90,7 @@ void add_log(Nonogram* env) {
     env->log.score += env->rewards[0];
     env->log.episode_length += env->steps_taken;
     env->log.episode_return += env->episode_reward;
+    env->log.solved += (env->rewards[0] > 0) ? 1 : 0;
     env->log.n++;
 }
 
@@ -223,7 +229,7 @@ float rand_uniform() {
 // Required functions
 void c_reset(Nonogram* env) {
     env->size = env->min_size + (rand() % (env->max_size - env->min_size + 1));
-    env->max_steps = 4 * env->size * env->size;
+    env->max_steps = env->easy_learn ? env->size * env->size : 4 * env->size * env->size;
 
     int full_grid_size = MAX_SIZE * MAX_SIZE;
     int max_clues = MAX_SIZE / 2;
@@ -241,7 +247,7 @@ void c_reset(Nonogram* env) {
     // Generate random solution using MAX_SIZE stride with uniform fill probability
     // Sample fill probability p uniformly from [0, 1] for difficulty variation
     float fill_prob = rand_uniform();
-    memset(env->solution, CELL_EMPTY, MAX_SIZE * MAX_SIZE);
+    memset(env->solution, CELL_WHITE, MAX_SIZE * MAX_SIZE);
     int has_filled = 0;
     for (int i = 0; i < env->size; i++) {
         for (int j = 0; j < env->size; j++) {
@@ -406,7 +412,7 @@ void c_step(Nonogram* env) {
     debug_printf("DEBUG c_step: action=%d, steps=%d\n", action, env->steps_taken);
 
     // Check timeout FIRST before any game logic
-    if (env->steps_taken >= env->max_steps) {
+    if (env->steps_taken > env->max_steps) {
         debug_printf("DEBUG: TIMEOUT\n");
         env->terminals[0] = 1;
         env->rewards[0] = REWARD_TIMEOUT;
@@ -525,8 +531,8 @@ void c_step(Nonogram* env) {
                 debug_printf("DEBUG: INVALID - row pattern doesn't match\n");
                 env->observations[pos] = CELL_EMPTY;
                 env->terminals[0] = 1;
-                env->rewards[0] = REWARD_INVALID_MOVE;
-                env->episode_reward += REWARD_INVALID_MOVE;
+                env->rewards[0] = REWARD_NO_MATCH;
+                env->episode_reward += REWARD_NO_MATCH;
                 add_log(env);
                 c_reset(env);
                 return;
@@ -552,8 +558,8 @@ void c_step(Nonogram* env) {
                 debug_printf("DEBUG: INVALID - col pattern doesn't match\n");
                 env->observations[pos] = CELL_EMPTY;
                 env->terminals[0] = 1;
-                env->rewards[0] = REWARD_INVALID_MOVE;
-                env->episode_reward += REWARD_INVALID_MOVE;
+                env->rewards[0] = REWARD_NO_MATCH;
+                env->episode_reward += REWARD_NO_MATCH;
                 add_log(env);
                 c_reset(env);
                 return;
@@ -581,6 +587,26 @@ void c_step(Nonogram* env) {
     } else {
         // Marking WHITE - always valid (just marks empty as not-black)
         env->observations[pos] = CELL_WHITE;
+    }
+
+    // Easy learn mode: check if cell matches solution
+    if (env->easy_learn) {
+        unsigned char solution_cell = env->solution[pos];
+        unsigned char actual = env->observations[pos];
+
+        if (solution_cell == actual) {
+            // Correct move: give positive reward and continue
+            env->rewards[0] += REWARD_EASY_LEARN_CORRECT;
+            env->episode_reward += REWARD_EASY_LEARN_CORRECT;
+        } else {
+            // Incorrect move: give negative reward, terminate and reset
+            env->rewards[0] += REWARD_EASY_LEARN_INCORRECT;
+            env->episode_reward += REWARD_EASY_LEARN_INCORRECT;
+            env->terminals[0] = 1;
+            add_log(env);
+            c_reset(env);
+            return;
+        }
     }
 
     // Check if solved (filled_total == target_total means all BLACK cells placed correctly)
